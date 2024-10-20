@@ -1,0 +1,53 @@
+% Set the directory where the images are located (parent folder 'Tropical Cyclone Patterns')
+inputFolder = 'path_to_your_image_folder/Tropical Cyclone Patterns';
+outputFolder = 'path_to_save_resized_images/Tropical Cyclone Patterns Resized';
+
+% Create the output folder if it does not exist
+if ~exist(outputFolder, 'dir')
+    mkdir(outputFolder);
+end
+
+% Desired size (strict resize to 380x380x3)
+desiredSize = [380, 380];
+
+% Get list of all image files in the folder and subfolders
+imageFiles = dir(fullfile(inputFolder, '**', '*.*'));
+imageExtensions = {'.jpg', '.jpeg', '.png', '.bmp', '.tiff'};
+
+% Process each image file
+for i = 1:length(imageFiles)
+    [~, ~, ext] = fileparts(imageFiles(i).name);
+    
+    % Check if the file is an image
+    if ismember(lower(ext), imageExtensions)
+        % Read the image
+        imagePath = fullfile(imageFiles(i).folder, imageFiles(i).name);
+        img = imread(imagePath);
+
+        % Check if the image is grayscale and convert to RGB if needed
+        if size(img, 3) == 1
+            img = cat(3, img, img, img); % Convert grayscale to RGB
+        end
+
+        % Resize the image to the desired size (strictly 380x380)
+        resizedImg = imresize(img, desiredSize);
+
+        % Create the same folder structure in the output directory
+        % Replace 'Tropical Cyclone Patterns' with 'Tropical Cyclone Patterns Resized' in path
+        relativePath = strrep(imageFiles(i).folder, inputFolder, '');
+        outputSubFolder = fullfile(outputFolder, relativePath);
+        
+        if ~exist(outputSubFolder, 'dir')
+            mkdir(outputSubFolder);
+        end
+
+        % Save the resized image in the output folder
+        [~, imageName, ext] = fileparts(imageFiles(i).name);
+        outputImagePath = fullfile(outputSubFolder, [imageName, ext]);
+        imwrite(resizedImg, outputImagePath);
+
+        fprintf('Resized and saved: %s\n', outputImagePath);
+    end
+end
+
+disp('All images have been resized and saved in respective folders.');

@@ -1,0 +1,93 @@
+% Specify the folder where the cyclone images are stored
+imageFolder = 'D:\384x384x3';  % Update the path to your dataset
+
+% Load images with subfolder names as labels
+imds = imageDatastore(imageFolder, ...
+    'IncludeSubfolders', true, ...
+    'LabelSource', 'foldernames');
+
+% Split datastore into training (80%) and validation (20%)
+[imdsTrain, imdsValidation] = splitEachLabel(imds, 0.8, 'randomized');
+
+% Specify input size (already 384x384 for EfficientNet-V2S)
+inputSize = [384 384 3];
+
+% Create augmented image datastores for both training and validation sets
+augmentedTrain = augmentedImageDatastore(inputSize, imdsTrain);
+augmentedValidation = augmentedImageDatastore(inputSize, imdsValidation);
+
+% Import the pre-trained EfficientNetV2-S from the ONNX file
+net = importNetworkFromONNX('efficientnet\efficientnet_v2s_original_model.onnx', 'OutputDataFormats', 'BC');
+
+% Convert the network into a layer graph
+lgraph = layerGraph(net);
+
+% Display all layer names in the layer graph to identify layers to replace
+for i = 1:numel(lgraph.Layers)
+    fprintf('Layer %d: %s\n', i, lgraph.Layers(i).Name);
+end
+
+% Number of cyclone intensity classes (T1.5 to T8)
+numClasses = 8;
+
+% Replace the fully connected layer with the new layer for 8 classes
+newFCLayer = fullyConnectedLayer(numClasses, 'Name', 'new_fc', ...
+    'WeightsInitializer', 'he', 'BiasInitializer', 'zeros');
+
+% Replace the classification layer
+newClassificationLayer = classificationLayer('Name', 'new_classification');
+
+% Replace the final layers (update with actual layer names)
+lgraph = replaceLayer(lgraph, 'x_classifier_classif', newFCLayer);  % Use correct layer names
+lgraph = replaceLayer(lgraph, 'outputOutput', newClassificationLayer);  % Use correct layer names
+
+% Define training options using SGDM optimizer with momentum
+options = trainingOptions('adam', ...
+    'InitialLearnRate', 1e-6, ...  % Low initial learning rate for fine-tuning
+    'LearnRateSchedule', 'piecewise', ...  % Piecewise learning rate schedule
+    'LearnRateDropFactor', 0.1, ...  % Drop learning rate by factor of 0.1
+    'LearnRateDropPeriod', 10, ...  % Every 10 epochs, reduce learning rate
+    'MaxEpochs', 100, ...  % Max number of epochs
+    'MiniBatchSize', 8, ...  % Reduce batch size for memory efficiency
+    'ValidationData', augmentedValidation, ...  % Validation data
+    'ValidationFrequency', 50, ...  % Validate every 50 iterations
+    'ValidationPatience', 10, ...  % Early stopping
+    'GradientThreshold', 5, ...  % Clip gradients to avoid instability
+    'Plots', 'training-progress', ...  % Plot training progress
+    'Verbose', true, ...  % Display verbose training info
+    'ExecutionEnvironment', 'gpu');  % Use GPU for faster training
+
+% Train the modified network
+trainedNet = trainNetwork(augmentedTrain, lgraph, options);
+
+% Classify validation images
+[YPred, scores] = classify(trainedNet, augmentedValidation);
+
+% Get the true labels
+YValidation = imdsValidation.Labels;
+
+% Calculate validation accuracy
+accuracy = sum(YPred == YValidation) / numel(YValidation);
+disp(['Validation Accuracy: ', num2str(accuracy * 100), '%']);
+
+% Plot confusion matrix
+figure;
+plotconfusion(YValidation, YPred);
+title('Confusion Matrix');
+
+% Plot ROC curves for each class
+figure;
+for i = 1:numClasses
+    [X, Y, ~, AUC] = perfcurve(YValidation == categorical(i), scores(:, i), true);
+    plot(X, Y, 'LineWidth', 2);
+    hold on;
+    fprintf('AUC for class %d: %.2f\n', i, AUC);
+end
+xlabel('False Positive Rate');
+ylabel('True Positive Rate');
+title('ROC Curves for Each Class');
+legend('T1.5', 'T2', 'T3', 'T4', 'T5', 'T6', 'T7', 'T8');
+
+% Clear variables and reset GPU to free memory
+clearvars -except trainedNet imdsValidation;
+gpuDevice(1);  % Reset GPU to free up memory
